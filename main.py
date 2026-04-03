@@ -1,14 +1,21 @@
+import json
 import sys
 import threading
 import time
 
 import cv2 as cv
 import numpy as np
+
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 import pyautogui
 
+from resources.gemini import TransactionExtractor
 from utils import show_imgs, Overlay, SCREEN_SIZE, screen_capture, stop_screen_capture, \
     SCREEN_CAP, MLOG, setup_screen
 
@@ -66,8 +73,10 @@ def draw_button(agent: Overlay, completion: float, x:float=0.775, y:float=0.15):
     return _tl, (int(SCREEN_SIZE[0]*x + tb_w),  int(SCREEN_SIZE[1]*y + tb_h))
 
 
-def process_cap_frame():
-    print("hi")
+def process_cap_frame(img: np.ndarray):
+    extractor = TransactionExtractor(api_keys=[os.getenv("GEMINI_API_KEY")])
+    result = extractor.extract_from_frame(img)
+    print(json.dumps(result, indent=2))
 
 
 
@@ -79,10 +88,14 @@ def tick():
     if not SCREEN_CAP.running:
         app.quit()
         return
-
     frame = SCREEN_CAP.get_latest_display_frame()
     if frame is not None:
         FRAME = frame
+
+
+    (bx1,by1), (bx2,by2) = draw_button(window, COMPL)
+    x, y = pyautogui.position()
+
 
     # Redraw overlay boxes from the fixed selected regions (no re-detection needed)
     if REGION:
@@ -91,21 +104,18 @@ def tick():
         br = (REGION['left'] + REGION['width'], REGION['top'] + REGION['height'])
         window.add_rectangle(tl, br, False, color=REGION.get('color', (255, 0, 0)))
 
+        if bx1 <= x <= bx2 and by1 <= y <= by2:
+            if int(COMPL*100)/100 == 0.98:
+                print("processing frame...")
+                process_cap_frame(frame[tl[1]:br[1],tl[0]:br[0]])
+                print("processed!!")
+            if COMPL <= 1.00:
+                COMPL += 0.019
+        else:
+            COMPL = 0.0
+
     if frame is not None:
         cv.imshow('Live Screen Capture', frame)
-
-    (bx1,by1), (bx2,by2) = draw_button(window, COMPL)
-
-    x, y = pyautogui.position()
-
-
-    if bx1 <= x <= bx2 and by1 <= y <= by2:
-        if int(COMPL*100)/100 == 0.98:
-            process_cap_frame()
-        if COMPL <= 1.00:
-            COMPL += 0.019
-    else:
-        COMPL = 0.0
 
     key = cv.waitKey(1)
     if key & 0xFF == ord('q'):
