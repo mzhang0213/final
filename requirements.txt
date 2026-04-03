@@ -1,0 +1,10 @@
+opencv-python>=4.5.0
+numpy>=1.19.0
+mss>=6.1.0
+pillow>=8.0.0
+pyqt6
+requests
+pyautogui
+pytesseract
+matplotlib
+#pip install -q -U google-genai

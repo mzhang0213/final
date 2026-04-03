@@ -1,3 +1,5 @@
+import random
+
 import cv2 as cv
 import numpy as np
 import os
@@ -6,7 +8,7 @@ from matplotlib import pyplot as plt
 import sys
 from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget
 from PyQt6.QtCore import Qt, QRect
-from PyQt6.QtGui import QPainter, QPen, QColor, QBrush
+from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QFont
 from mss import mss
 import time
 import platform
@@ -15,7 +17,7 @@ from queue import Queue
 
 import logging
 
-from server.resources.region_menu import RegionMenu
+from resources.region_menu import RegionMenu, ScreenRegionPicker
 import requests
 
 
@@ -172,320 +174,14 @@ def show_imgs(_img):
         if cv.waitKey(1) & 0xFF == ord('q'):
             break
 
-def find_outliers_iqr(data: list) -> tuple[list, list]:
-    """
-    Find outliers using the Interquartile Range (IQR) method.
-
-    :param data: List of numeric values
-    :return: (filtered_data, indices)
-    """
-    data = np.array(data)
-    if len(data) == 0:
-        return [], []
-
-    # Convert to numpy array
-    arr_data = np.array(data)
-
-    # Handle both scalar and coordinate data
-    if arr_data.ndim == 1:  # 1D array (scalar values)
-        Q1 = np.percentile(arr_data, 25)
-        Q3 = np.percentile(arr_data, 75)
-        IQR = Q3 - Q1
-        lower_bound = Q1 - 1.5 * IQR
-        upper_bound = Q3 + 1.5 * IQR
-
-        filtered_data = []
-        indices = []
-        for i, val in enumerate(arr_data):
-            if lower_bound <= val <= upper_bound:
-                filtered_data.append(data[i])  # Use original data to preserve type
-                indices.append(i)
-    else:  # 2D array (coordinates or multi-dimensional data)
-        # Process each dimension separately
-        filtered_data = []
-        indices = []
-        for i, coord in enumerate(arr_data):
-            coord_valid = True
-            for dim_idx in range(len(coord)):
-                dim_data = arr_data[:, dim_idx]
-                Q1 = np.percentile(dim_data, 25)
-                Q3 = np.percentile(dim_data, 75)
-                IQR = Q3 - Q1
-                lower_bound = Q1 - 1.5 * IQR
-                upper_bound = Q3 + 1.5 * IQR
-
-                if not (lower_bound <= coord[dim_idx] <= upper_bound):
-                    coord_valid = False
-                    break
-
-            if coord_valid:
-                filtered_data.append(data[i])  # Use original data to preserve type
-                indices.append(i)
-
-    return filtered_data, indices
-
-def ensure_precision(data_x: list, data_y: list) -> bool:
-    thresh_factor = 0.2
-    x_thresh = SCREEN_SIZE[0]*thresh_factor
-    y_thresh = SCREEN_SIZE[1]*thresh_factor
-    '''
-    notes on threshold:
-    - not applying a hard pixel cap for std dev
-    - thresholds are based on screen size (ie x_thresh = within deviation 5% len of screen size)
-    images come in based on screen size of the user's screen, and thus the feature target images are also scaled, thus requiring this threshold to scale based on screen size.
-    '''
-    for pts in data_x:
-        dev = np.std(pts)
-        MLOG.log_msg("x: "+str(dev))
-        if dev > x_thresh:
-            return False
-    for pts in data_y:
-        dev = np.std(pts)
-        MLOG.log_msg("y: "+str(dev))
-        if dev > y_thresh:
-            return False
-    return True
-
-def ensure_fit(tl, br, target_w, target_h, img_w, img_h):
-    """
-    Expands the search area if it's smaller than the target image,
-    clamped to the actual image bounds.
-    """
-    x1, y1 = tl
-    x2, y2 = br
-
-    area_w = x2 - x1
-    area_h = y2 - y1
-
-    # Expand symmetrically if too small
-    if area_w < target_w:
-        diff = target_w - area_w + 2
-        if x2+diff>=img_w:
-            #if it were to send over the border, add first this side then add rest to other side
-            diff-=img_w-x2
-            x2=img_w
-            x1=max(0,x1-diff)
-        elif x1-diff<=0:
-            diff-=x1
-            x1=0
-            x2=min(img_w,x2+diff)
-        else:
-            #in the middle not touching borders
-            x1 = max(0, x1 - diff // 2)
-            x2 = min(img_w, x2 + diff // 2 + diff % 2)
-
-    if area_h < target_h:
-        diff = target_h - area_h + 2
-        if y2+diff>=img_h:
-            diff-=img_h-y2
-            y2=img_h
-            y1=max(0,y1-diff)
-        elif y1-diff<=0:
-            diff-=y1
-            y1=0
-            y2=min(img_h,y2+diff)
-        else:
-            y1 = max(0, y1 - diff // 2)
-            y2 = min(img_h, y2 + diff // 2 + diff % 2)
-
-    return (x1, y1), (x2, y2)
-
-
 def get_screen_coords(w:int, h:int, scale:tuple[tuple[float,float],tuple[float,float]])-> tuple[tuple[int, int], tuple[int, int]]:
     return (int(scale[0][0]*w),int(scale[0][1]*h)),(int(scale[1][0]*w),int(scale[1][1]*h))
 
-class GameState:
-
-    def __init__(self, img):
-        self.img = img #the frame of the game state to analyze
-        self.key_images = {}
-        #todo: rework this cuz shouldn't be duplicated for each game state
-        keys_dir = os.path.join(os.path.dirname(__file__), 'keys')
-        for key in FEATURES:
-            path = os.path.join(keys_dir, f"{key}.png")
-            if os.path.exists(path):
-                self.key_images[key] = cv.imread(path)
-
-    def get_box(self, target, tl:tuple[int,int], br:tuple[int,int]) -> tuple[tuple[int, int], tuple[int, int]]:
-        """
-        Retrieves the bounding box on the screen containing target (key image).
-        :param br:
-        :param tl:
-        :param target: target image as np.array image
-        :return: bounding box - (top left coordinate, bottom right coordinate)
-        """
-        #Source: https://docs.opencv.org/4.x/d4/dc6/tutorial_py_template_matching.html
-        #(note minor edits made)
-        assert self.img is not None, "this game state's img could not be read"
-        assert target is not None, "target image is None"
-        if tl == (-1, -1):
-            tl = (0,0)
-        if br == (-1, -1):
-            br = tuple(self.img.shape[::-1])
-
-        # Store original coordinates offset
-        offset_x, offset_y = tl[0], tl[1]
-
-        # Template matching works best in grayscale or with matched channels
-        #also ensure that the bounding box we are searching in will guarantee to fit the tgt
-
-        img = self.img[tl[1]:br[1],tl[0]:br[0]]
-        img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-        if len(target.shape) == 3:
-            target = cv.cvtColor(target, cv.COLOR_BGR2GRAY)
-
-        w, h = target.shape[::-1]
-
-        # cv.imwrite(f"img{tl[0]}.png", img)
-        # cv.imwrite(f"target{target.shape[1]}.png", target)
-
-        # All the 6 methods for comparison in a list
-        methods = ['TM_CCOEFF', 'TM_CCOEFF_NORMED', 'TM_CCORR',
-                   'TM_CCORR_NORMED', 'TM_SQDIFF', 'TM_SQDIFF_NORMED']
-
-        results = []
-
-        for m in methods:
-            method = getattr(cv, m)
-            # Apply template Matching
-            res = cv.matchTemplate(img,target,method)
-            min_val, max_val, min_loc, max_loc = cv.minMaxLoc(res)
-
-            # If the method is TM_SQDIFF or TM_SQDIFF_NORMED, take minimum
-            if method in [cv.TM_SQDIFF, cv.TM_SQDIFF_NORMED]:
-                top_left = int(min_loc[0]), int(min_loc[1])
-            else:
-                top_left = int(max_loc[0]), int(max_loc[1])
-            bottom_right = int(top_left[0] + w), int(top_left[1] + h)
-
-            # Adjust coordinates back to original image space
-            top_left = (top_left[0] + offset_x, top_left[1] + offset_y)
-            bottom_right = (bottom_right[0] + offset_x, bottom_right[1] + offset_y)
-
-            curr_box = top_left,bottom_right
-            results.append(curr_box)
-
-            # cv.rectangle(img,top_left, bottom_right, 255, 2)
-
-            # plt.subplot(121),plt.imshow(res,cmap = 'gray')
-            # plt.title('Matching Result'), plt.xticks([]), plt.yticks([])
-            # plt.subplot(122),plt.imshow(img,cmap = 'gray')
-            # plt.title('Detected Point'), plt.xticks([]), plt.yticks([])
-            # plt.suptitle(meth)
-            #
-            # plt.show()
-
-        # Extract x and y coordinates separately for outlier detection
-        tl_x_coords = [r[0][0] for r in results]
-        tl_y_coords = [r[0][1] for r in results]
-        br_x_coords = [r[1][0] for r in results]
-        br_y_coords = [r[1][1] for r in results]
-
-        if not ensure_precision([tl_x_coords,br_x_coords],[br_y_coords,tl_y_coords]):
-            MLOG.log_error("failed precision test")
-            return (0,0),(0,0)
-
-        # Find outliers for each coordinate separately
-        _, tl_x_outlier_indices = find_outliers_iqr(tl_x_coords)
-        _, tl_y_outlier_indices = find_outliers_iqr(tl_y_coords)
-        _, br_x_outlier_indices = find_outliers_iqr(br_x_coords)
-        _, br_y_outlier_indices = find_outliers_iqr(br_y_coords)
-
-        pruned = [] #this is just the results tuples pruned for outliers
-        outlier_indicies = set(tl_x_outlier_indices + tl_y_outlier_indices +
-                               br_x_outlier_indices + br_y_outlier_indices)
-        for i in range(len(results)):
-            if i not in outlier_indicies:
-                pruned.append(results[i])
-
-        if not pruned:
-            #fallback if too few results
-            return results[0] #TODO: always chooses the first matching
-
-        # Calculate mean of pruned results
-        final_tl = (round(np.mean([r[0][0] for r in pruned])),
-                   int(np.mean([r[0][1] for r in pruned])))
-        final_br = (int(np.mean([r[1][0] for r in pruned])),
-                   int(np.mean([r[1][1] for r in pruned])))
-
-        return final_tl, final_br
-
-
-    # def get_boxes(self):
-    #     return {
-    #
-    #     }
-
-    def get_boxes(self):
-        """
-        Analyzes the current game screen and returns structured data based on detected keys.
-        """
-        data = {}
-        img_h,img_w = self.img.shape[:2]
-        scale_x = SCREEN_SIZE[0] / BASE_RESOLUTION[0]
-        scale_y = SCREEN_SIZE[1] / BASE_RESOLUTION[1]
-
-        for key_name in FEATURES:
-            if key_name not in self.key_images:
-                continue
-
-            curr_feature = self.key_images[key_name]
-
-            kh, kw = curr_feature.shape[:2]
-            new_kw = max(1, int(kw * scale_x))
-            new_kh = max(1, int(kh * scale_y))
-            scaled_feature = cv.resize(curr_feature, (new_kw, new_kh))
-            searcharea_tl,searcharea_br = get_screen_coords(img_w,img_h,FEATURES[key_name])
-            searcharea_tl, searcharea_br = ensure_fit(
-                searcharea_tl, searcharea_br, new_kw, new_kh, img_w, img_h
-            )
-
-            tl, br = self.get_box(scaled_feature, searcharea_tl, searcharea_br)
-            feature = self.img[tl[1]:br[1], tl[0]:br[0]]
-            fh,fw = feature.shape[:2]
-
-            if key_name == "gamestats":
-                # KDA: approx 250 to 400
-                kda_box = (int(0.42 * fw),(0.68 * fw)),(0,fh)
-                # CS: approx 450 to 520
-                cs_box = (int(0.76 * fw),int(0.88 * fw)),(0,fh)
-                # Clock: approx 530 to 590
-                clock_box = (int(0.9 * fw),fw),(0,fh)
-                # Score: approx 0 to 150
-                score_box = (0,int(0.25 * fw)),(0,fh)
-
-                data["gamestats"] = {
-                    "full": (tl,br),
-                    "sections": {
-                        "score": score_box,
-                        "kda": kda_box,
-                        "cs": cs_box,
-                        "clock": clock_box
-                    }
-                }
-            else:
-                data[key_name] = {
-                    "full": (tl,br)
-                }
-
-        return data
-
-    def extract_box(self,tl:tuple[int,int],br:tuple[int,int]):
-        return self.img[tl[1]:br[1],tl[0]:br[0]]
-
-    def display_boxes(self):
-        boxes = self.get_boxes()
-        for key in FEATURES:
-            if boxes[key] is None:
-                continue
-            og = self.img.copy()
-            cv.rectangle(og, boxes[key]["full"][0], boxes[key]["full"][1], (0,255,0))
-            cv.imshow(key, og)
-
-    def export_state(self):
-        return self.get_boxes()
+LAST_BOX_W: int = -1
+LAST_BOX_H: int = -1
 
 class Overlay(QMainWindow):
+
     def __init__(self):
         super().__init__()
         # Set flags for: No border, Always on Top, and Click-Through
@@ -523,11 +219,14 @@ class Overlay(QMainWindow):
         self.rectangles = []
         self.circles = []
         self.arrows = []
+        self.text_boxes = []
 
         self.resize(SCREEN_SIZE[0], SCREEN_SIZE[1])
         self.show()
 
     def paintEvent(self, event):
+        global LAST_BOX_W, LAST_BOX_H
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -576,6 +275,27 @@ class Overlay(QMainWindow):
             # Draw arrowhead
             self.draw_arrowhead(painter, start_x, start_y, end_x, end_y)
 
+        for i,box in enumerate(self.text_boxes):
+            x,y,text,color = box
+            painter = QPainter(self)
+            font = QFont('Arial', 13)
+            font.setBold(True)
+            painter.setFont(font)
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(text)
+            th = fm.height()
+            pad = 10
+            bx = x
+            by = y
+            bw = tw + pad * 2
+            bh = th + pad * 2
+            if i==len(self.text_boxes)-1: LAST_BOX_W,LAST_BOX_H = bw,bh
+            painter.fillRect(bx, by, bw, bh, QColor(255, 255, 255, 230))
+            painter.setPen(QPen(QColor(0, 0, 0), 1))
+            painter.drawRect(bx, by, bw, bh)
+            painter.setPen(Qt.GlobalColor.black)
+            painter.drawText(bx + pad, by + pad + fm.ascent(), text)
+
     def draw_arrowhead(self, painter, start_x, start_y, end_x, end_y):
         """Draw an arrowhead at the end point of the arrow
 
@@ -606,7 +326,7 @@ class Overlay(QMainWindow):
         painter.drawLine(int(end_x), int(end_y), int(x1), int(y1))
         painter.drawLine(int(end_x), int(end_y), int(x2), int(y2))
 
-    def add_rectangle(self, top_left, bottom_right, filled=True, color=(255, 0, 0)):
+    def add_rectangle(self, top_left:tuple[int,int], bottom_right:tuple[int,int], filled=True, color=(255, 0, 0)):
         """Add a new rectangle given top-left and bottom-right points
 
         Args:
@@ -619,6 +339,11 @@ class Overlay(QMainWindow):
         br_x, br_y = bottom_right
         self.rectangles.append((tl_x, tl_y, br_x, br_y, filled, color))
         self.update()  # Trigger repaint
+
+    def add_text_box(self, x:int, y:int, text: str, color=(255, 0, 0)):
+        self.text_boxes.append((x,y,text,color))
+        self.update()  # Trigger repaint
+        return LAST_BOX_W, LAST_BOX_H
 
     def add_circle(self, center, radius, filled=True):
         """Add a new circle given center point and radius
@@ -811,16 +536,15 @@ def setup_screen(overlay_agent: Overlay) -> dict:
     :param overlay_agent: the PyQt Overlay window
     :return: dict of name -> {left, top, width, height}
     """
-    regions = RegionMenu(list(FEATURES.keys())).run()
+    color = (random.randint(0,255),random.randint(0,255),random.randint(0,255))
+    picker = ScreenRegionPicker(color=color)
+    region = picker.pick()
+    print(region)
+    tl = (region['left'], region['top'])
+    br = (region['left'] + region['width'], region['top'] + region['height'])
+    overlay_agent.add_rectangle(tl, br, False, color=region.get('color', (255, 0, 0)))
 
-    # Draw each selected region on the overlay in its assigned color
-    overlay_agent.clearCanvas()
-    for region in regions.values():
-        tl = (region['left'], region['top'])
-        br = (region['left'] + region['width'], region['top'] + region['height'])
-        overlay_agent.add_rectangle(tl, br, False, color=region.get('color', (255, 0, 0)))
-
-    return regions
+    return region
 
 
 

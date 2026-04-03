@@ -7,29 +7,31 @@ import numpy as np
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 
-from server.utils import show_imgs, Overlay, SCREEN_SIZE, screen_capture, stop_screen_capture, \
+import pyautogui
+
+from utils import show_imgs, Overlay, SCREEN_SIZE, screen_capture, stop_screen_capture, \
     SCREEN_CAP, MLOG, setup_screen
 
 # Populated after setup_screen — name -> {left, top, width, height}
-REGIONS: dict = {}
+REGION: dict = {}
 
-overlay_queue = None
+target_region = None
 FRAME = None
 DELAY_CAP = False
 
 
 def process_frame(frame):
     """Called periodically on a background thread. Crops each selected region from the full frame."""
-    global overlay_queue
+    global target_region
     print(f"Processing frame at {time.strftime('%H:%M:%S')} - Shape: {frame.shape}")
     try:
         crops = {}
-        for name, region in REGIONS.items():
+        for name, region in REGION.items():
             l, t, w, h = region['left'], region['top'], region['width'], region['height']
             crop = frame[t:t + h, l:l + w]
             crops[name] = crop
 
-        overlay_queue = {
+        target_region = {
             "img_w": frame.shape[1],
             "img_h": frame.shape[0],
             "crops": crops,
@@ -41,24 +43,31 @@ def process_frame(frame):
 
 def export_state_capture():
     """Save each region crop and the full frame to disk."""
-    global FRAME, overlay_queue
+    global FRAME, target_region
     print("capturing!")
     if FRAME is None:
         print("FRAME NOT DETECTED")
         return
-    if overlay_queue is None:
+    if target_region is None:
         print("overlay_queue NOT DETECTED")
         return
-    for name, crop in overlay_queue.get("crops", {}).items():
+    for name, crop in target_region.get("crops", {}).items():
         if crop.size > 0:
             cv.imwrite(f"cap-box_{name}.png", crop)
     cv.imwrite("cap-main_frame.png", FRAME)
 
 
+def draw_button(agent: Overlay, completion: float, x:float=0.775, y:float=0.15):
+    _tl = int(SCREEN_SIZE[0]*x),int(SCREEN_SIZE[1]*y)
+    tb_w,tb_h = agent.add_text_box(_tl[0],_tl[1],"Hover to capture!", (38, 148, 73))
+
+    _br_prog = int(SCREEN_SIZE[0]*x + tb_w * completion),  int(SCREEN_SIZE[1]*y + tb_h)
+    agent.add_rectangle(_tl,_br_prog,True, (55, 222, 108))
+
 # tick is a periodic displayer and also detects wait keys for both cv and pyqt
 def tick():
     """Called by QTimer on the main thread — safe for OpenCV GUI."""
-    global overlay_queue, FRAME, DELAY_CAP
+    global target_region, FRAME, DELAY_CAP
     if not SCREEN_CAP.running:
         app.quit()
         return
@@ -68,15 +77,18 @@ def tick():
         FRAME = frame
 
     # Redraw overlay boxes from the fixed selected regions (no re-detection needed)
-    if REGIONS:
+    if REGION:
         window.clearCanvas()
-        for region in REGIONS.values():
-            tl = (region['left'], region['top'])
-            br = (region['left'] + region['width'], region['top'] + region['height'])
-            window.add_rectangle(tl, br, False, color=region.get('color', (255, 0, 0)))
+        tl = (REGION['left'], REGION['top'])
+        br = (REGION['left'] + REGION['width'], REGION['top'] + REGION['height'])
+        window.add_rectangle(tl, br, False, color=REGION.get('color', (255, 0, 0)))
 
     if frame is not None:
         cv.imshow('Live Screen Capture', frame)
+
+    draw_button(window, 0)
+
+    x, y = pyautogui.position()
 
     key = cv.waitKey(1)
     if key & 0xFF == ord('q'):
@@ -99,13 +111,13 @@ window = Overlay()
 
 # Let user pick regions before starting capture
 print("Running region setup...")
-REGIONS = setup_screen(window)
+REGION = setup_screen(window)
 
-if not REGIONS:
+if not REGION:
     print("No regions selected, exiting.")
     sys.exit(0)
 
-print(f"Regions configured: {list(REGIONS.keys())}")
+print(f"Regions configured: {list(REGION.keys())}")
 print("Starting screen capture...")
 success = screen_capture(process_callback=process_frame, process_interval=1.0)
 
