@@ -277,7 +277,6 @@ class Overlay(QMainWindow):
 
         for i,box in enumerate(self.text_boxes):
             x,y,text,color = box
-            painter = QPainter(self)
             font = QFont('Arial', 13)
             font.setBold(True)
             painter.setFont(font)
@@ -374,6 +373,7 @@ class Overlay(QMainWindow):
         self.rectangles.clear()
         self.circles.clear()
         self.arrows.clear()
+        self.text_boxes.clear()
         self.update()  # Trigger repaint
 
     def hideCanvas(self):

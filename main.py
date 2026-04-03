@@ -63,11 +63,19 @@ def draw_button(agent: Overlay, completion: float, x:float=0.775, y:float=0.15):
 
     _br_prog = int(SCREEN_SIZE[0]*x + tb_w * completion),  int(SCREEN_SIZE[1]*y + tb_h)
     agent.add_rectangle(_tl,_br_prog,True, (55, 222, 108))
+    return _tl, (int(SCREEN_SIZE[0]*x + tb_w),  int(SCREEN_SIZE[1]*y + tb_h))
 
+
+def process_cap_frame():
+    print("hi")
+
+
+
+COMPL = 0.0
 # tick is a periodic displayer and also detects wait keys for both cv and pyqt
 def tick():
     """Called by QTimer on the main thread — safe for OpenCV GUI."""
-    global target_region, FRAME, DELAY_CAP
+    global target_region, FRAME, DELAY_CAP, COMPL
     if not SCREEN_CAP.running:
         app.quit()
         return
@@ -86,9 +94,18 @@ def tick():
     if frame is not None:
         cv.imshow('Live Screen Capture', frame)
 
-    draw_button(window, 0)
+    (bx1,by1), (bx2,by2) = draw_button(window, COMPL)
 
     x, y = pyautogui.position()
+
+
+    if bx1 <= x <= bx2 and by1 <= y <= by2:
+        if int(COMPL*100)/100 == 0.98:
+            process_cap_frame()
+        if COMPL <= 1.00:
+            COMPL += 0.019
+    else:
+        COMPL = 0.0
 
     key = cv.waitKey(1)
     if key & 0xFF == ord('q'):
@@ -119,7 +136,7 @@ if not REGION:
 
 print(f"Regions configured: {list(REGION.keys())}")
 print("Starting screen capture...")
-success = screen_capture(process_callback=process_frame, process_interval=1.0)
+success = screen_capture() #no process_capture used
 
 if not success:
     print("Failed to start screen capture")
