@@ -92,10 +92,11 @@ def tick():
     if frame is not None:
         FRAME = frame
 
+    if frame is not None:
+        cv.imshow('Live Screen Capture', frame)
 
-    (bx1,by1), (bx2,by2) = draw_button(window, COMPL)
+
     x, y = pyautogui.position()
-
 
     # Redraw overlay boxes from the fixed selected regions (no re-detection needed)
     if REGION:
@@ -104,18 +105,18 @@ def tick():
         br = (REGION['left'] + REGION['width'], REGION['top'] + REGION['height'])
         window.add_rectangle(tl, br, False, color=REGION.get('color', (255, 0, 0)))
 
+        (bx1,by1), (bx2,by2) = draw_button(window, COMPL)
+
         if bx1 <= x <= bx2 and by1 <= y <= by2:
             if int(COMPL*100)/100 == 0.98:
                 print("processing frame...")
-                process_cap_frame(frame[tl[1]:br[1],tl[0]:br[0]])
+                process_cap_frame(FRAME[tl[1]:br[1],tl[0]:br[0]])
                 print("processed!!")
             if COMPL <= 1.00:
                 COMPL += 0.019
         else:
             COMPL = 0.0
 
-    if frame is not None:
-        cv.imshow('Live Screen Capture', frame)
 
     key = cv.waitKey(1)
     if key & 0xFF == ord('q'):
