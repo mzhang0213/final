@@ -7,6 +7,8 @@ requests
 pyautogui
 pytesseract
 matplotlib
+
 #pip install -q -U google-genai
 
 python-dotenv
+google-api-python-client

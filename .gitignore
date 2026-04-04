@@ -29,3 +29,5 @@ wheels/
 
 # Environment
 .env
+
+*/sheets_creds.json

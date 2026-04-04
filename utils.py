@@ -177,8 +177,6 @@ def show_imgs(_img):
 def get_screen_coords(w:int, h:int, scale:tuple[tuple[float,float],tuple[float,float]])-> tuple[tuple[int, int], tuple[int, int]]:
     return (int(scale[0][0]*w),int(scale[0][1]*h)),(int(scale[1][0]*w),int(scale[1][1]*h))
 
-LAST_BOX_W: int = -1
-LAST_BOX_H: int = -1
 
 class Overlay(QMainWindow):
 
@@ -225,10 +223,28 @@ class Overlay(QMainWindow):
         self.show()
 
     def paintEvent(self, event):
-        global LAST_BOX_W, LAST_BOX_H
-
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+
+        for i,box in enumerate(self.text_boxes):
+            x, y, text, color, font_size = box
+            font = QFont('Arial', font_size)
+            font.setBold(font_size >= 12)
+            painter.setFont(font)
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(text)
+            th = fm.height()
+            pad = 10
+            bx = x
+            by = y
+            bw = tw + pad * 2
+            bh = th + pad * 2
+            painter.fillRect(bx, by, bw, bh, QColor(255, 255, 255, 255))
+            painter.setPen(QPen(QColor(0, 0, 0), 1))
+            painter.drawRect(bx, by, bw, bh)
+            painter.setPen(Qt.GlobalColor.black)
+            painter.drawText(bx + pad, by + pad + fm.ascent(), text)
 
         # Draw each rectangle using TL and BR points
         for rect_coords in self.rectangles:
@@ -275,26 +291,6 @@ class Overlay(QMainWindow):
             # Draw arrowhead
             self.draw_arrowhead(painter, start_x, start_y, end_x, end_y)
 
-        for i,box in enumerate(self.text_boxes):
-            x,y,text,color = box
-            font = QFont('Arial', 13)
-            font.setBold(True)
-            painter.setFont(font)
-            fm = painter.fontMetrics()
-            tw = fm.horizontalAdvance(text)
-            th = fm.height()
-            pad = 10
-            bx = x
-            by = y
-            bw = tw + pad * 2
-            bh = th + pad * 2
-            if i==len(self.text_boxes)-1: LAST_BOX_W,LAST_BOX_H = bw,bh
-            painter.fillRect(bx, by, bw, bh, QColor(255, 255, 255, 230))
-            painter.setPen(QPen(QColor(0, 0, 0), 1))
-            painter.drawRect(bx, by, bw, bh)
-            painter.setPen(Qt.GlobalColor.black)
-            painter.drawText(bx + pad, by + pad + fm.ascent(), text)
-
     def draw_arrowhead(self, painter, start_x, start_y, end_x, end_y):
         """Draw an arrowhead at the end point of the arrow
 
@@ -339,10 +335,23 @@ class Overlay(QMainWindow):
         self.rectangles.append((tl_x, tl_y, br_x, br_y, filled, color))
         self.update()  # Trigger repaint
 
-    def add_text_box(self, x:int, y:int, text: str, color=(255, 0, 0)):
-        self.text_boxes.append((x,y,text,color))
-        self.update()  # Trigger repaint
-        return LAST_BOX_W, LAST_BOX_H
+    @staticmethod
+    def _measure_text_box(text: str, font_size: int, pad: int = 10) -> tuple[int, int]:
+        from PyQt6.QtGui import QFontMetrics
+        font = QFont('Arial', font_size)
+        font.setBold(font_size >= 12)
+        fm = QFontMetrics(font)
+        return fm.horizontalAdvance(text) + pad * 2, fm.height() + pad * 2
+
+    def add_text_box(self, x: int, y: int, text: str, color=(255, 0, 0)):
+        self.text_boxes.append((x, y, text, color, 13))
+        self.update()
+        return self._measure_text_box(text, 13)
+
+    def add_small_text_box(self, x: int, y: int, text: str, color=(80, 80, 80), font_size: int = 9):
+        self.text_boxes.append((x, y, text, color, font_size))
+        self.update()
+        return self._measure_text_box(text, font_size)
 
     def add_circle(self, center, radius, filled=True):
         """Add a new circle given center point and radius
@@ -367,6 +376,95 @@ class Overlay(QMainWindow):
         end_x, end_y = end_point
         self.arrows.append((start_x, start_y, end_x, end_y))
         self.update()  # Trigger repaint
+
+    def draw_button(self, completion: float, text: str,
+                    x: float = 0.775, y: float = 0.15,
+                    color: tuple = (38, 148, 73), progress_color: tuple = (55, 222, 108)):
+        tl_x = int(SCREEN_SIZE[0] * x)
+        tl_y = int(SCREEN_SIZE[1] * y)
+        tb_w, tb_h = self.add_text_box(tl_x, tl_y, text, color)
+        br_x = tl_x + tb_w
+        br_y = tl_y + tb_h
+        prog_x = tl_x + int(tb_w * completion)
+        self.add_rectangle((tl_x, tl_y), (prog_x, br_y), True, progress_color)
+        return (tl_x, tl_y), (br_x, br_y)
+
+    def draw_status(self, text: str, color: tuple = (200, 120, 0), x: float = 0.775, y: float = 0.05):
+        px = int(SCREEN_SIZE[0] * x)
+        py = int(SCREEN_SIZE[1] * y)
+        self.add_small_text_box(px, py, text, color=color, font_size=10)
+
+    def draw_transaction_table(self, transactions: list[dict], x: float = 0.10, y: float = 0.30,
+                               hover_zones: dict | None = None):
+        """Draw extracted transactions as a table on the overlay.
+
+        Args:
+            transactions: list of dicts with keys: date, company, amount
+            x: left edge as fraction of screen width
+            y: top edge as fraction of screen height
+            hover_zones: dict of (row, col) -> completion float for hover highlights.
+                         col -1 = X button. cols 0/1/2 = date/company/amount.
+
+        Returns:
+            list of hitboxes: [(x1, y1, x2, y2, row_idx, col_idx), ...]
+            col_idx -1 = X delete button, 0 = date, 1 = company, 2 = amount
+        """
+        if not transactions:
+            return []
+
+        if hover_zones is None:
+            hover_zones = {}
+
+        px = int(SCREEN_SIZE[0] * x)
+        py = int(SCREEN_SIZE[1] * y)
+        x_btn_w = 25  # width of X button column
+        col_widths = [120, 180, 80]  # date, company, amount
+        row_h = 35
+        header_color = (40, 40, 40)
+        row_color = (60, 60, 60)
+        hitboxes = []
+
+        # Header row (offset right to account for X column)
+        headers = ["Date", "Company", "Amount"]
+        cx = px + x_btn_w
+        for j, hdr in enumerate(headers):
+            self.add_small_text_box(cx, py, hdr, color=header_color, font_size=10)
+            cx += col_widths[j]
+
+        # Data rows
+        keys = ["date", "company", "amount"]
+        for i, txn in enumerate(transactions):
+            ry = py + (i + 1) * row_h
+
+            # X delete button
+            x_compl = hover_zones.get((i, -1), 0.0)
+            x_color = (200, 50, 50) if x_compl > 0 else (150, 150, 150)
+            self.add_small_text_box(px, ry, "X", color=x_color, font_size=9)
+            x_w, x_h = self._measure_text_box("X", 9)
+            if x_compl > 0:
+                prog_x = px + int(x_w * x_compl)
+                self.add_rectangle((px, ry), (prog_x, ry + x_h), True, (200, 50, 50))
+            hitboxes.append((px, ry, px + x_w, ry + x_h, i, -1))
+
+            # Data cells
+            cx = px + x_btn_w
+            vals = [
+                txn.get("date") or "—",
+                txn.get("company") or "—",
+                txn.get("amount") or "—",
+            ]
+            for j, val in enumerate(vals):
+                cell_compl = hover_zones.get((i, j), 0.0)
+                cell_color = (30, 90, 160) if cell_compl > 0 else row_color
+                self.add_small_text_box(cx, ry, val, color=cell_color, font_size=9)
+                cw, ch = self._measure_text_box(val, 9)
+                if cell_compl > 0:
+                    prog_x = cx + int(cw * cell_compl)
+                    self.add_rectangle((cx, ry), (prog_x, ry + ch), True, (30, 90, 160))
+                hitboxes.append((cx, ry, cx + cw, ry + ch, i, j))
+                cx += col_widths[j]
+
+        return hitboxes
 
     def clearCanvas(self):
         """Clear all shapes from the canvas"""

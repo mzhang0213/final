@@ -7,7 +7,7 @@ import cv2 as cv
 import numpy as np
 
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QInputDialog
 
 import os
 from dotenv import load_dotenv
@@ -16,75 +16,117 @@ load_dotenv()
 import pyautogui
 
 from resources.gemini import TransactionExtractor
+from resources.sheets import insert_transactions
 from utils import show_imgs, Overlay, SCREEN_SIZE, screen_capture, stop_screen_capture, \
     SCREEN_CAP, MLOG, setup_screen
 
 # Populated after setup_screen — name -> {left, top, width, height}
 REGION: dict = {}
 
-target_region = None
+# target_region = None
 FRAME = None
 DELAY_CAP = False
 
 
-def process_frame(frame):
-    """Called periodically on a background thread. Crops each selected region from the full frame."""
-    global target_region
-    print(f"Processing frame at {time.strftime('%H:%M:%S')} - Shape: {frame.shape}")
-    try:
-        crops = {}
-        for name, region in REGION.items():
-            l, t, w, h = region['left'], region['top'], region['width'], region['height']
-            crop = frame[t:t + h, l:l + w]
-            crops[name] = crop
+# def process_frame(frame):
+#     """Called periodically on a background thread. Crops each selected region from the full frame."""
+#     global target_region
+#     print(f"Processing frame at {time.strftime('%H:%M:%S')} - Shape: {frame.shape}")
+#     try:
+#         crops = {}
+#         for name, region in REGION.items():
+#             l, t, w, h = region['left'], region['top'], region['width'], region['height']
+#             crop = frame[t:t + h, l:l + w]
+#             crops[name] = crop
+#
+#         target_region = {
+#             "img_w": frame.shape[1],
+#             "img_h": frame.shape[0],
+#             "crops": crops,
+#         }
+#         print(f"Captured {len(crops)} region(s): {list(crops.keys())}")
+#     except Exception as e:
+#         print(f"Error processing frame: {str(e)}")
 
-        target_region = {
-            "img_w": frame.shape[1],
-            "img_h": frame.shape[0],
-            "crops": crops,
-        }
-        print(f"Captured {len(crops)} region(s): {list(crops.keys())}")
-    except Exception as e:
-        print(f"Error processing frame: {str(e)}")
+# def export_state_capture():
+#     """Save each region crop and the full frame to disk."""
+#     global FRAME, target_region
+#     print("capturing!")
+#     if FRAME is None:
+#         print("FRAME NOT DETECTED")
+#         return
+#     if target_region is None:
+#         print("overlay_queue NOT DETECTED")
+#         return
+#     for name, crop in target_region.get("crops", {}).items():
+#         if crop.size > 0:
+#             cv.imwrite(f"cap-box_{name}.png", crop)
+#     cv.imwrite("cap-main_frame.png", FRAME)
 
 
-def export_state_capture():
-    """Save each region crop and the full frame to disk."""
-    global FRAME, target_region
-    print("capturing!")
-    if FRAME is None:
-        print("FRAME NOT DETECTED")
-        return
-    if target_region is None:
-        print("overlay_queue NOT DETECTED")
-        return
-    for name, crop in target_region.get("crops", {}).items():
-        if crop.size > 0:
-            cv.imwrite(f"cap-box_{name}.png", crop)
-    cv.imwrite("cap-main_frame.png", FRAME)
+LAST_RESULT = None
+STATUS = None  # None | "processing" | "done" | "logging" | "logged"
 
-
-def draw_button(agent: Overlay, completion: float, x:float=0.775, y:float=0.15):
-    _tl = int(SCREEN_SIZE[0]*x),int(SCREEN_SIZE[1]*y)
-    tb_w,tb_h = agent.add_text_box(_tl[0],_tl[1],"Hover to capture!", (38, 148, 73))
-
-    _br_prog = int(SCREEN_SIZE[0]*x + tb_w * completion),  int(SCREEN_SIZE[1]*y + tb_h)
-    agent.add_rectangle(_tl,_br_prog,True, (55, 222, 108))
-    return _tl, (int(SCREEN_SIZE[0]*x + tb_w),  int(SCREEN_SIZE[1]*y + tb_h))
-
+PROCESSING = False
+LOGGING = False
 
 def process_cap_frame(img: np.ndarray):
-    extractor = TransactionExtractor(api_keys=[os.getenv("GEMINI_API_KEY")])
-    result = extractor.extract_from_frame(img)
-    print(json.dumps(result, indent=2))
+    global LAST_RESULT, STATUS, PROCESSING
+    if PROCESSING:
+        return
+    PROCESSING = True
+    STATUS = "processing"
+
+    def _run():
+        global LAST_RESULT, STATUS, PROCESSING
+        try:
+            extractor = TransactionExtractor(api_keys=[os.getenv("GEMINI_API_KEY")])
+            result = extractor.extract_from_frame(img)
+            LAST_RESULT = result.get("transactions", [])
+            STATUS = "done"
+            print(json.dumps(result, indent=2))
+        except Exception as e:
+            STATUS = "done"
+            print(f"Error processing frame: {e}")
+        finally:
+            PROCESSING = False
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def log_to_sheets():
+    global STATUS, COMPL_SHEETS, LOGGING
+    if LOGGING:
+        return
+    LOGGING = True
+    STATUS = "logging"
+
+    def _run():
+        global STATUS, COMPL_SHEETS, LOGGING
+        try:
+            n = insert_transactions(LAST_RESULT)
+            print(f"logged {n} transactions to sheets!")
+            STATUS = "logged"
+        except Exception as e:
+            print(f"Error logging to sheets: {e}")
+            STATUS = "done"
+        finally:
+            COMPL_SHEETS = 0.0
+            LOGGING = False
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 
 COMPL = 0.0
+COMPL_SHEETS = 0.0
+TABLE_HOVER: dict = {}  # (row, col) -> completion float
+TABLE_HITBOXES: list = []
+EDITING = False
 # tick is a periodic displayer and also detects wait keys for both cv and pyqt
 def tick():
     """Called by QTimer on the main thread — safe for OpenCV GUI."""
-    global target_region, FRAME, DELAY_CAP, COMPL
+    global FRAME, DELAY_CAP, COMPL, COMPL_SHEETS, STATUS, TABLE_HOVER, TABLE_HITBOXES, EDITING
     if not SCREEN_CAP.running:
         app.quit()
         return
@@ -105,17 +147,76 @@ def tick():
         br = (REGION['left'] + REGION['width'], REGION['top'] + REGION['height'])
         window.add_rectangle(tl, br, False, color=REGION.get('color', (255, 0, 0)))
 
-        (bx1,by1), (bx2,by2) = draw_button(window, COMPL)
+        (bx1,by1), (bx2,by2) = window.draw_button(COMPL, "Hover to capture!")
 
-        if bx1 <= x <= bx2 and by1 <= y <= by2:
+        # Sheets button right below capture button
+        sheets_y = by2 / SCREEN_SIZE[1] + 0.01
+        (sx1,sy1), (sx2,sy2) = window.draw_button(
+            COMPL_SHEETS, text="Log in Sheets", x=0.775, y=sheets_y,
+            color=(30, 90, 160), progress_color=(23, 121, 232),
+        )
+
+        if LAST_RESULT:
+            TABLE_HITBOXES = window.draw_transaction_table(LAST_RESULT, hover_zones=TABLE_HOVER)
+
+            # Check table hover interactions
+            keys = ["date", "company", "amount"]
+            hovered_zone = None
+            for hx1, hy1, hx2, hy2, row, col in TABLE_HITBOXES:
+                if hx1 <= x <= hx2 and hy1 <= y <= hy2:
+                    hovered_zone = (row, col)
+                    compl = TABLE_HOVER.get((row, col), 0.0)
+                    if int(compl * 100) / 100 == 0.98:
+                        if col == -1:
+                            # Delete row
+                            LAST_RESULT.pop(row)
+                            TABLE_HOVER = {k: v for k, v in TABLE_HOVER.items() if k[0] != row}
+                        elif not EDITING:
+                            # Edit cell
+                            EDITING = True
+                            field = keys[col]
+                            old_val = LAST_RESULT[row].get(field) or ""
+                            new_val, ok = QInputDialog.getText(
+                                None, f"Edit {field}", f"{field}:", text=old_val
+                            )
+                            if ok and new_val is not None:
+                                LAST_RESULT[row][field] = new_val if new_val else None
+                            EDITING = False
+                        TABLE_HOVER[(row, col)] = 0.0
+                    elif compl <= 1.00:
+                        TABLE_HOVER[(row, col)] = compl + 0.019
+                    break
+
+            # Reset hover for zones not being hovered
+            for key in list(TABLE_HOVER.keys()):
+                if key != hovered_zone:
+                    TABLE_HOVER[key] = 0.0
+
+        # Status indicator
+        if STATUS == "processing":
+            window.draw_status("Processing...", color=(200, 120, 0))
+        elif STATUS == "done":
+            window.draw_status("Results ready", color=(38, 148, 73))
+        elif STATUS == "logging":
+            window.draw_status("Logging to Sheets...", color=(30, 90, 160))
+        elif STATUS == "logged":
+            window.draw_status("Logged to Sheets!", color=(38, 148, 73))
+
+        if not PROCESSING and bx1 <= x <= bx2 and by1 <= y <= by2:
             if int(COMPL*100)/100 == 0.98:
-                print("processing frame...")
                 process_cap_frame(FRAME[tl[1]:br[1],tl[0]:br[0]])
-                print("processed!!")
             if COMPL <= 1.00:
                 COMPL += 0.019
         else:
             COMPL = 0.0
+
+        if LAST_RESULT and not LOGGING and sx1 <= x <= sx2 and sy1 <= y <= sy2:
+            if int(COMPL_SHEETS*100)/100 == 0.98:
+                log_to_sheets()
+            if COMPL_SHEETS <= 1.00:
+                COMPL_SHEETS += 0.019
+        else:
+            COMPL_SHEETS = 0.0
 
 
     key = cv.waitKey(1)
@@ -124,14 +225,14 @@ def tick():
         MLOG.dump(write_file=True)
         stop_screen_capture()
         app.quit()
-    if key & 0xFF == ord('c'):
-        export_state_capture()
-        DELAY_CAP = False
-    if key & 0xFF == ord('v'):
-        if not DELAY_CAP:
-            print(" -- DELAY CAP INITIATED -- ")
-            DELAY_CAP = True
-            threading.Timer(3, export_state_capture).start()
+    # if key & 0xFF == ord('c'):
+    #     export_state_capture()
+    #     DELAY_CAP = False
+    # if key & 0xFF == ord('v'):
+    #     if not DELAY_CAP:
+    #         print(" -- DELAY CAP INITIATED -- ")
+    #         DELAY_CAP = True
+    #         threading.Timer(3, export_state_capture).start()
 
 
 app = QApplication.instance() or QApplication(sys.argv)
@@ -147,7 +248,7 @@ if not REGION:
 
 print(f"Regions configured: {list(REGION.keys())}")
 print("Starting screen capture...")
-success = screen_capture() #no process_capture used
+success = screen_capture()
 
 if not success:
     print("Failed to start screen capture")
