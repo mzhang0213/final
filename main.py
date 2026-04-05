@@ -26,44 +26,6 @@ REGION: dict = {}
 # target_region = None
 FRAME = None
 DELAY_CAP = False
-
-
-# def process_frame(frame):
-#     """Called periodically on a background thread. Crops each selected region from the full frame."""
-#     global target_region
-#     print(f"Processing frame at {time.strftime('%H:%M:%S')} - Shape: {frame.shape}")
-#     try:
-#         crops = {}
-#         for name, region in REGION.items():
-#             l, t, w, h = region['left'], region['top'], region['width'], region['height']
-#             crop = frame[t:t + h, l:l + w]
-#             crops[name] = crop
-#
-#         target_region = {
-#             "img_w": frame.shape[1],
-#             "img_h": frame.shape[0],
-#             "crops": crops,
-#         }
-#         print(f"Captured {len(crops)} region(s): {list(crops.keys())}")
-#     except Exception as e:
-#         print(f"Error processing frame: {str(e)}")
-
-# def export_state_capture():
-#     """Save each region crop and the full frame to disk."""
-#     global FRAME, target_region
-#     print("capturing!")
-#     if FRAME is None:
-#         print("FRAME NOT DETECTED")
-#         return
-#     if target_region is None:
-#         print("overlay_queue NOT DETECTED")
-#         return
-#     for name, crop in target_region.get("crops", {}).items():
-#         if crop.size > 0:
-#             cv.imwrite(f"cap-box_{name}.png", crop)
-#     cv.imwrite("cap-main_frame.png", FRAME)
-
-
 LAST_RESULT = None
 STATUS = None  # None | "processing" | "done" | "logging" | "logged"
 
