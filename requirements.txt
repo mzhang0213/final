@@ -12,5 +12,3 @@ matplotlib
 
 python-dotenv
 google-api-python-client
-
-yeah i want cli tool. pkg it as "finalog" and have a set of functions:
