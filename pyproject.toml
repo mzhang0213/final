@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finalog"
+version = "0.1.0"
+description = "Capture banking transactions from screen and log them to Google Sheets"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Michael Zhang"}]
+keywords = ["banking", "transactions", "screen-capture", "google-sheets"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: MacOS X",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial",
+]
+dependencies = [
+    "opencv-python>=4.5.0",
+    "numpy>=1.19.0",
+    "mss>=6.1.0",
+    "pillow>=8.0.0",
+    "PyQt6",
+    "requests",
+    "pyautogui",
+    "pytesseract",
+    "matplotlib",
+    "python-dotenv",
+    "google-api-python-client",
+    "google-genai",
+    "google-auth",
+]
+
+[project.scripts]
+finalog = "finalog.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/mzhang/finalog"
+
+[tool.setuptools.packages.find]
+include = ["finalog*"]
+
+[tool.setuptools.package-data]
+"finalog.resources.prompts" = ["*.txt"]

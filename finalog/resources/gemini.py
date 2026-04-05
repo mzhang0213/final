@@ -8,7 +8,7 @@ import cv2 as cv
 from google import genai
 from google.genai import types
 
-from resources.prompts.schemas import SCHEMAS
+from finalog.resources.prompts.schemas import SCHEMAS
 
 from dotenv import load_dotenv
 

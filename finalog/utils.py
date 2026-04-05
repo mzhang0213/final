@@ -17,7 +17,7 @@ from queue import Queue
 
 import logging
 
-from resources.region_menu import RegionMenu, ScreenRegionPicker
+from finalog.resources.region_menu import RegionMenu, ScreenRegionPicker
 import requests
 
 

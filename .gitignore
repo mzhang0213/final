@@ -29,5 +29,10 @@ wheels/
 
 # Environment
 .env
+.DS_Store
 
+# Credentials
 */sheets_creds.json
+
+# Logs
+logs/

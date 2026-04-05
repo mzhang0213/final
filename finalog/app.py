@@ -10,14 +10,11 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication, QInputDialog
 
 import os
-from dotenv import load_dotenv
-load_dotenv()
-
 import pyautogui
 
-from resources.gemini import TransactionExtractor
-from resources.sheets import insert_transactions
-from utils import show_imgs, Overlay, SCREEN_SIZE, screen_capture, stop_screen_capture, \
+from finalog.resources.gemini import TransactionExtractor
+from finalog.resources.sheets import insert_transactions
+from finalog.utils import show_imgs, Overlay, SCREEN_SIZE, screen_capture, stop_screen_capture, \
     SCREEN_CAP, MLOG, setup_screen
 
 # Populated after setup_screen — name -> {left, top, width, height}
@@ -31,6 +28,7 @@ STATUS = None  # None | "processing" | "done" | "logging" | "logged"
 
 PROCESSING = False
 LOGGING = False
+SHOW_VIDEO = False
 
 def process_cap_frame(img: np.ndarray):
     global LAST_RESULT, STATUS, PROCESSING
@@ -88,7 +86,7 @@ EDITING = False
 # tick is a periodic displayer and also detects wait keys for both cv and pyqt
 def tick():
     """Called by QTimer on the main thread — safe for OpenCV GUI."""
-    global FRAME, DELAY_CAP, COMPL, COMPL_SHEETS, STATUS, TABLE_HOVER, TABLE_HITBOXES, EDITING
+    global FRAME, DELAY_CAP, COMPL, COMPL_SHEETS, STATUS, TABLE_HOVER, TABLE_HITBOXES, EDITING, SHOW_VIDEO
     if not SCREEN_CAP.running:
         app.quit()
         return
@@ -96,7 +94,7 @@ def tick():
     if frame is not None:
         FRAME = frame
 
-    if frame is not None:
+    if frame is not None and SHOW_VIDEO:
         cv.imshow('Live Screen Capture', frame)
 
 
@@ -181,49 +179,135 @@ def tick():
             COMPL_SHEETS = 0.0
 
 
-    key = cv.waitKey(1)
-    if key & 0xFF == ord('q'):
-        print("'q' pressed, stopping...")
+    # cv window lifecycle — must happen on main thread
+    if SHOW_VIDEO:
+        cv.waitKey(1)
+    else:
+        cv.destroyAllWindows()
+        cv.waitKey(1)
+
+
+app = None
+window = None
+
+COMMANDS = {
+    "q": "quit",
+    "s": "toggle video feed",
+    "c": "capture & extract transactions",
+    "l": "log results to Google Sheets",
+    "x": "clear current results",
+    "i": "show status info",
+    "?": "show available commands",
+}
+
+
+def _handle_command(cmd: str):
+    global SHOW_VIDEO, LAST_RESULT, STATUS
+    cmd = cmd.strip().lower()
+
+    if cmd == "q":
+        print("Quitting...")
         MLOG.dump(write_file=True)
         stop_screen_capture()
         app.quit()
-    # if key & 0xFF == ord('c'):
-    #     export_state_capture()
-    #     DELAY_CAP = False
-    # if key & 0xFF == ord('v'):
-    #     if not DELAY_CAP:
-    #         print(" -- DELAY CAP INITIATED -- ")
-    #         DELAY_CAP = True
-    #         threading.Timer(3, export_state_capture).start()
+
+    elif cmd == "s":
+        SHOW_VIDEO = not SHOW_VIDEO
+        print(f"Video feed {'ON' if SHOW_VIDEO else 'OFF'}")
+
+    elif cmd == "c":
+        if FRAME is not None and REGION:
+            tl = (REGION['left'], REGION['top'])
+            br = (REGION['left'] + REGION['width'], REGION['top'] + REGION['height'])
+            print("Capturing frame...")
+            process_cap_frame(FRAME[tl[1]:br[1], tl[0]:br[0]])
+        else:
+            print("No frame available yet." if FRAME is None else "No region configured.")
+
+    elif cmd == "l":
+        if LAST_RESULT:
+            log_to_sheets()
+        else:
+            print("No results to log. Press 'c' first.")
+
+    elif cmd == "i":
+        print(f"  Status:  {STATUS or 'idle'}")
+        print(f"  Video:   {'ON' if SHOW_VIDEO else 'OFF'}")
+        print(f"  Results: {len(LAST_RESULT) if LAST_RESULT else 0} transactions")
+
+    elif cmd == "x":
+        LAST_RESULT = None
+        STATUS = None
+        print("Results cleared.")
+
+    elif cmd == "?":
+        print()
+        for k, v in COMMANDS.items():
+            print(f"  {k}  {v}")
+        print()
 
 
-app = QApplication.instance() or QApplication(sys.argv)
-window = Overlay()
+def _cli_loop():
+    """Runs on a daemon thread, reads single keypress and dispatches."""
+    import tty, termios
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch:
+                _handle_command(ch)
+    except (EOFError, OSError):
+        pass
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-# Let user pick regions before starting capture
-print("Running region setup...")
-REGION = setup_screen(window)
 
-if not REGION:
-    print("No regions selected, exiting.")
-    sys.exit(0)
+def run():
+    """Entry point called by `finalog start`."""
+    global app, window, REGION
 
-print(f"Regions configured: {list(REGION.keys())}")
-print("Starting screen capture...")
-success = screen_capture()
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = Overlay()
 
-if not success:
-    print("Failed to start screen capture")
-    sys.exit(1)
+    # Let user pick regions before starting capture
+    print("Running region setup...")
+    REGION = setup_screen(window)
 
-# QTimer fires tick() every 16ms (~60fps) on the main thread inside app.exec()
-timer = QTimer()
-timer.timeout.connect(tick)
-timer.start(16)
+    if not REGION:
+        print("No regions selected, exiting.")
+        sys.exit(0)
 
-try:
-    sys.exit(app.exec())
-except KeyboardInterrupt:
-    print("\nStopping...")
-    stop_screen_capture()
-    cv.destroyAllWindows()
+    print(f"Regions configured: {list(REGION.keys())}")
+    print("Starting screen capture...")
+    success = screen_capture()
+
+    if not success:
+        print("Failed to start screen capture")
+        sys.exit(1)
+
+    print()
+    print("─" * 40)
+    print("  finalog is running (video OFF)")
+    print()
+    print("  c  capture    s  video    l  log")
+    print("  x  clear      i  status   q  quit")
+    print("  ?  help")
+    print("─" * 40)
+    print()
+
+    # Start CLI input thread
+    threading.Thread(target=_cli_loop, daemon=True).start()
+
+    # QTimer fires tick() every 16ms (~60fps) on the main thread inside app.exec()
+    timer = QTimer()
+    timer.timeout.connect(tick)
+    timer.start(16)
+
+    try:
+        sys.exit(app.exec())
+    except KeyboardInterrupt:
+        print("\nStopping...")
+        stop_screen_capture()
+        cv.destroyAllWindows()
