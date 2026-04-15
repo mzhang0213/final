@@ -13,8 +13,12 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 DEFAULTS = {
     "gemini_api_key": "",
+    "output_mode": "sheets",  # "sheets" or "csv"
     "google_sheet_id": "",
     "google_sheets_creds": "",  # path to service-account JSON
+    "sheet_name": "Spring 2026",  # tab name inside the spreadsheet
+    "column_range": "A:E",  # columns to read/write (e.g. "A:E")
+    "csv_output_path": "",  # path to CSV file for csv output mode
 }
 
 
@@ -45,7 +49,13 @@ def save(cfg: dict):
 def is_configured() -> bool:
     """Return True if the minimum required keys are set."""
     cfg = load()
-    return bool(cfg.get("gemini_api_key") and cfg.get("google_sheet_id") and cfg.get("google_sheets_creds"))
+    if not cfg.get("gemini_api_key"):
+        return False
+    mode = cfg.get("output_mode", "sheets")
+    if mode == "csv":
+        return bool(cfg.get("csv_output_path"))
+    else:
+        return bool(cfg.get("google_sheet_id") and cfg.get("google_sheets_creds"))
 
 
 def run_setup():
@@ -65,22 +75,45 @@ def run_setup():
             cfg[key] = val
 
     _prompt("gemini_api_key", "Gemini API key")
-    _prompt("google_sheet_id", "Google Sheet ID (from the URL)")
 
-    # Sheets credentials file — copy into ~/.finalog for portability
-    current_creds = cfg.get("google_sheets_creds", "")
-    hint = f" [{current_creds}]" if current_creds else ""
-    creds_input = input(f"Path to Google service-account JSON{hint}: ").strip()
-    if creds_input:
-        src = os.path.expanduser(creds_input)
-        if not os.path.isfile(src):
-            print(f"  Warning: '{src}' not found — saving path anyway.")
-            cfg["google_sheets_creds"] = src
-        else:
-            dest = os.path.join(CONFIG_DIR, "sheets_creds.json")
-            shutil.copy2(src, dest)
-            cfg["google_sheets_creds"] = dest
-            print(f"  Copied credentials to {dest}")
+    # Output mode selection
+    current_mode = cfg.get("output_mode", "sheets")
+    print()
+    print(f"Output mode (current: {current_mode}):")
+    print("  1) Google Sheets")
+    print("  2) CSV file")
+    mode_choice = input("Choose [1/2]:").strip()
+    if mode_choice == "2":
+        cfg["output_mode"] = "csv"
+    elif mode_choice == "1":
+        cfg["output_mode"] = "sheets"
+    # else: keep current
+
+    if cfg.get("output_mode") == "csv":
+        current_csv = cfg.get("csv_output_path", "")
+        hint = f" [{current_csv}]" if current_csv else ""
+        csv_path = input(f"Path for CSV output file{hint}: ").strip()
+        if csv_path:
+            cfg["csv_output_path"] = os.path.expanduser(csv_path)
+    else:
+        _prompt("google_sheet_id", "Google Sheet ID (from the URL)")
+        _prompt("sheet_name", "Sheet tab name")
+        _prompt("column_range", "Column range (e.g. A:E)")
+
+        # Sheets credentials file — copy into ~/.finalog for portability
+        current_creds = cfg.get("google_sheets_creds", "")
+        hint = f" [{current_creds}]" if current_creds else ""
+        creds_input = input(f"Path to Google service-account JSON{hint}: ").strip()
+        if creds_input:
+            src = os.path.expanduser(creds_input)
+            if not os.path.isfile(src):
+                print(f"  Warning: '{src}' not found — saving path anyway.")
+                cfg["google_sheets_creds"] = src
+            else:
+                dest = os.path.join(CONFIG_DIR, "sheets_creds.json")
+                shutil.copy2(src, dest)
+                cfg["google_sheets_creds"] = dest
+                print(f"  Copied credentials to {dest}")
 
     save(cfg)
     print()
@@ -94,3 +127,5 @@ def apply_to_env(cfg: dict | None = None):
     os.environ.setdefault("GEMINI_API_KEY", cfg.get("gemini_api_key", ""))
     os.environ.setdefault("GOOGLE_SHEET_ID", cfg.get("google_sheet_id", ""))
     os.environ.setdefault("GOOGLE_SHEETS_CREDS", cfg.get("google_sheets_creds", ""))
+    os.environ.setdefault("SHEET_NAME", cfg.get("sheet_name", "Spring 2026"))
+    os.environ.setdefault("COLUMN_RANGE", cfg.get("column_range", "A:E"))

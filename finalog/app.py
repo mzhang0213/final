@@ -13,12 +13,14 @@ import os
 import pyautogui
 
 from finalog.resources.gemini import TransactionExtractor
-from finalog.resources.sheets import insert_transactions
+from finalog.resources.sheets import insert_transactions, insert_transactions_csv
+from finalog import config
 from finalog.utils import show_imgs, Overlay, SCREEN_SIZE, screen_capture, stop_screen_capture, \
     SCREEN_CAP, MLOG, setup_screen
 
 # Populated after setup_screen — name -> {left, top, width, height}
 REGION: dict = {}
+OUTPUT_MODE: str = "sheets"  # set from config at startup
 
 # target_region = None
 FRAME = None
@@ -54,7 +56,7 @@ def process_cap_frame(img: np.ndarray):
     threading.Thread(target=_run, daemon=True).start()
 
 
-def log_to_sheets():
+def log_transactions():
     global STATUS, COMPL_SHEETS, LOGGING
     if LOGGING:
         return
@@ -63,12 +65,19 @@ def log_to_sheets():
 
     def _run():
         global STATUS, COMPL_SHEETS, LOGGING
+        cfg = config.load()
+        mode = cfg.get("output_mode", "sheets")
         try:
-            n = insert_transactions(LAST_RESULT)
-            print(f"logged {n} transactions to sheets!")
+            if mode == "csv":
+                csv_path = cfg.get("csv_output_path", "")
+                n = insert_transactions_csv(LAST_RESULT, csv_path)
+                print(f"logged {n} transactions to {csv_path}!")
+            else:
+                n = insert_transactions(LAST_RESULT)
+                print(f"logged {n} transactions to sheets!")
             STATUS = "logged"
         except Exception as e:
-            print(f"Error logging to sheets: {e}")
+            print(f"Error logging transactions: {e}")
             STATUS = "done"
         finally:
             COMPL_SHEETS = 0.0
@@ -109,10 +118,11 @@ def tick():
 
         (bx1,by1), (bx2,by2) = window.draw_button(COMPL, "Hover to capture!")
 
-        # Sheets button right below capture button
+        # Log button right below capture button
         sheets_y = by2 / SCREEN_SIZE[1] + 0.01
+        _log_label = "Log to CSV" if OUTPUT_MODE == "csv" else "Log in Sheets"
         (sx1,sy1), (sx2,sy2) = window.draw_button(
-            COMPL_SHEETS, text="Log in Sheets", x=0.775, y=sheets_y,
+            COMPL_SHEETS, text=_log_label, x=0.775, y=sheets_y,
             color=(30, 90, 160), progress_color=(23, 121, 232),
         )
 
@@ -158,9 +168,11 @@ def tick():
         elif STATUS == "done":
             window.draw_status("Results ready", color=(38, 148, 73))
         elif STATUS == "logging":
-            window.draw_status("Logging to Sheets...", color=(30, 90, 160))
+            _log_target = "CSV" if OUTPUT_MODE == "csv" else "Sheets"
+            window.draw_status(f"Logging to {_log_target}...", color=(30, 90, 160))
         elif STATUS == "logged":
-            window.draw_status("Logged to Sheets!", color=(38, 148, 73))
+            _log_target = "CSV" if OUTPUT_MODE == "csv" else "Sheets"
+            window.draw_status(f"Logged to {_log_target}!", color=(38, 148, 73))
 
         if not PROCESSING and bx1 <= x <= bx2 and by1 <= y <= by2:
             if int(COMPL*100)/100 == 0.98:
@@ -172,7 +184,7 @@ def tick():
 
         if LAST_RESULT and not LOGGING and sx1 <= x <= sx2 and sy1 <= y <= sy2:
             if int(COMPL_SHEETS*100)/100 == 0.98:
-                log_to_sheets()
+                log_transactions()
             if COMPL_SHEETS <= 1.00:
                 COMPL_SHEETS += 0.019
         else:
@@ -194,7 +206,7 @@ COMMANDS = {
     "q": "quit",
     "s": "toggle video feed",
     "c": "capture & extract transactions",
-    "l": "log results to Google Sheets",
+    "l": "log results (Sheets or CSV)",
     "x": "clear current results",
     "i": "show status info",
     "?": "show available commands",
@@ -226,7 +238,7 @@ def _handle_command(cmd: str):
 
     elif cmd == "l":
         if LAST_RESULT:
-            log_to_sheets()
+            log_transactions()
         else:
             print("No results to log. Press 'c' first.")
 
@@ -266,8 +278,9 @@ def _cli_loop():
 
 def run():
     """Entry point called by `finalog start`."""
-    global app, window, REGION
+    global app, window, REGION, OUTPUT_MODE
 
+    OUTPUT_MODE = config.load().get("output_mode", "sheets")
     app = QApplication.instance() or QApplication(sys.argv)
     window = Overlay()
 

@@ -16,10 +16,26 @@ load_dotenv()
 #   GOOGLE_SHEET_ID      - spreadsheet ID from the URL
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-SHEET_NAME = "Spring 2026"
 
 # Columns: A=#, B=Date, C=Item, D=Amount, E=Notes
 # Row 1 is the header; data starts at row 2.
+
+
+def _sheet_name() -> str:
+    return os.getenv("SHEET_NAME", "Spring 2026")
+
+
+def _column_range() -> str:
+    """Return column range like 'A:E'."""
+    return os.getenv("COLUMN_RANGE", "A:E")
+
+
+def _col_start() -> str:
+    return _column_range().split(":")[0]
+
+
+def _col_end() -> str:
+    return _column_range().split(":")[1]
 
 # Year to assume for sheet dates that lack a year
 _DEFAULT_YEAR = 2026
@@ -45,9 +61,9 @@ def _get_sheet_gid() -> int:
     service = _get_service()
     meta = service.spreadsheets().get(spreadsheetId=_sheet_id()).execute()
     for sheet in meta["sheets"]:
-        if sheet["properties"]["title"] == SHEET_NAME:
+        if sheet["properties"]["title"] == _sheet_name():
             return sheet["properties"]["sheetId"]
-    raise RuntimeError(f"Sheet tab '{SHEET_NAME}' not found")
+    raise RuntimeError(f"Sheet tab '{_sheet_name()}' not found")
 
 
 # ── Date parsing ──────────────────────────────────────────────────────────────
@@ -109,7 +125,7 @@ def read_transactions(range_str: str = None) -> list[list[str]]:
     """
     service = _get_service()
     if range_str is None:
-        range_str = f"'{SHEET_NAME}'!A2:E"
+        range_str = f"'{_sheet_name()}'!{_col_start()}2:{_col_end()}"
 
     result = (
         service.spreadsheets()
@@ -211,8 +227,8 @@ def insert_transactions(transactions: list[dict]) -> int:
 
     # Clear existing data and write fresh
     end_row = len(padded) + 1  # +1 for header
-    clear_range = f"'{SHEET_NAME}'!A2:E{end_row}"
-    write_range = f"'{SHEET_NAME}'!A2:E{end_row}"
+    clear_range = f"'{_sheet_name()}'!{_col_start()}2:{_col_end()}{end_row}"
+    write_range = f"'{_sheet_name()}'!{_col_start()}2:{_col_end()}{end_row}"
 
     service.spreadsheets().values().clear(
         spreadsheetId=spreadsheet_id,
@@ -236,6 +252,44 @@ def append_transactions(transactions: list[dict]) -> int:
     """Alias — routes through insert_transactions which handles both
     mid-sheet insertion and end-of-sheet appending."""
     return insert_transactions(transactions)
+
+
+# ── CSV output ────────────────────────────────────────────────────────────────
+
+import csv
+
+def insert_transactions_csv(transactions: list[dict], csv_path: str) -> int:
+    """Append transactions to a CSV file.
+
+    Creates the file with a header row if it doesn't exist.
+
+    Args:
+        transactions: list of dicts with keys: date, company, amount
+        csv_path: path to the output CSV file
+
+    Returns:
+        number of rows written
+    """
+    if not transactions:
+        return 0
+
+    file_exists = os.path.isfile(csv_path)
+    os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["Date", "Company", "Amount"])
+        for txn in transactions:
+            d = _parse_iso_date(txn.get("date", ""))
+            date_str = _format_sheet_date(d) if d else ""
+            writer.writerow([
+                date_str,
+                txn.get("company") or "",
+                txn.get("amount") or "",
+            ])
+
+    return len(transactions)
 
 
 # ── Quick test ────────────────────────────────────────────────────────────────
